@@ -99,8 +99,9 @@ std::vector<StringPiece> Split(const string& str, const string& delimiter,
   return SplitOnCharSet(str, delimiter, predicate);
 }
 
+template <typename Predicate>
 std::vector<StringPiece> SplitV2(const string& str, StringPiece sep,
-                                 int maxsplit) {
+                                 int maxsplit, Predicate skip_predicate) {
   // This SplitV2 method matches the behavior of python's str.split:
   //   If sep is given, consecutive delimiters are not grouped together
   //   and are deemed to delimit empty strings (for example, '1,,2'.split(',')
@@ -143,12 +144,16 @@ std::vector<StringPiece> SplitV2(const string& str, StringPiece sep,
   int split = 0;
   while (p != text.end()) {
     StringPiece token = text.substr(0, p - text.begin());
-    result.push_back(token);
+    if (skip_predicate(token)) {
+      result.push_back(token);
+    }
     text.remove_prefix(token.size());
     text.remove_prefix(sep.size());
     ++split;
     if (maxsplit > 0 && split == maxsplit) {
-      result.push_back(StringPiece(text));
+      if (skip_predicate(text)) {
+        result.push_back(StringPiece(text));
+      }
       return result;
     }
     p = std::search(text.begin(), text.end(), sep.begin(), sep.end());
@@ -242,8 +247,9 @@ class StringSplitOp : public OpKernel {
 class StringSplitV2Op : public OpKernel {
  public:
   explicit StringSplitV2Op(OpKernelConstruction* context)
-      : OpKernel(context), maxsplit_(-1) {
+      : OpKernel(context), maxsplit_(-1), skip_empty_(true) {
     OP_REQUIRES_OK(context, context->GetAttr("maxsplit", &maxsplit_));
+    OP_REQUIRES_OK(context, context->GetAttr("skip_empty", &skip_empty_));
   }
 
   void Compute(OpKernelContext* ctx) override {
@@ -272,7 +278,9 @@ class StringSplitV2Op : public OpKernel {
     int64 max_num_entries = 0;
     std::vector<int64> num_indices(batch_size);
     for (int64 i = 0; i < batch_size; ++i) {
-      std::vector<StringPiece> parts = SplitV2(input_vec(i), sep, maxsplit_);
+      std::vector<StringPiece> parts =
+          skip_empty_ ? SplitV2(input_vec(i), sep, maxsplit_, str_util::SkipEmpty())
+                      : SplitV2(input_vec(i), sep, maxsplit_, str_util::AllowEmpty());
       int64 n_entries = parts.size();
       num_indices[i] = n_entries;
       output_size += n_entries;
@@ -307,6 +315,7 @@ class StringSplitV2Op : public OpKernel {
 
  private:
   int maxsplit_;
+  bool skip_empty_;
 };
 
 REGISTER_KERNEL_BUILDER(Name("StringSplit").Device(DEVICE_CPU), StringSplitOp);
